@@ -1,323 +1,24 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { createClient, type Session } from '@supabase/supabase-js'
-import { SUPABASE_ANON_KEY, SUPABASE_URL } from './config'
-
-const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
-
-/* ------------------------------------------------------------------ */
-/* Local store + outbox (works offline). Persisted in localStorage.    */
-/* ------------------------------------------------------------------ */
-type Row = Record<string, any>
-type Op = { table: string; row: Row; onConflict?: string }
-type Store = {
-  userId?: string
-  churchId?: string
-  churchName?: string
-  ministryId?: string
-  personId?: string
-  members: Row[]
-  events: Row[]
-  attendance: Row[]
-  departments: Row[]
-  cells: Row[]
-  deptTypes: Row[]
-  deptMembers: Row[]
-  cellMembers: Row[]
-  outbox: Op[]
-  lastSync?: string
-}
-
-const KEY = 'ecms_store_v1'
-const empty: Store = {
-  members: [],
-  events: [],
-  attendance: [],
-  departments: [],
-  cells: [],
-  deptTypes: [],
-  deptMembers: [],
-  cellMembers: [],
-  outbox: [],
-}
-const today = () => new Date().toISOString().slice(0, 10)
-const byName = (a: Row, b: Row) => (a.name || '').localeCompare(b.name || '')
-
-function load(): Store {
-  try {
-    return { ...empty, ...JSON.parse(localStorage.getItem(KEY) || '{}') }
-  } catch {
-    return { ...empty }
-  }
-}
-
-let store: Store = load()
-const listeners = new Set<() => void>()
-
-function commit(patch: Partial<Store>) {
-  store = { ...store, ...patch }
-  localStorage.setItem(KEY, JSON.stringify(store))
-  listeners.forEach((f) => f())
-}
-
-function useStore(): Store {
-  const [, bump] = useState(0)
-  useEffect(() => {
-    const f = () => bump((n) => n + 1)
-    listeners.add(f)
-    return () => {
-      listeners.delete(f)
-    }
-  }, [])
-  return store
-}
-
-/* ------------------------------------------------------------------ */
-/* Actions: always write locally first, then queue for the server.     */
-/* ------------------------------------------------------------------ */
-function addMember(full_name: string, phone: string) {
-  if (!store.churchId) return
-  const person_id = crypto.randomUUID()
-  const membership_id = crypto.randomUUID()
-  commit({
-    members: [...store.members, { membership_id, person_id, status: 'active', full_name, phone }],
-    outbox: [
-      ...store.outbox,
-      { table: 'people', row: { id: person_id, full_name, phone: phone || null } },
-      {
-        table: 'church_memberships',
-        row: { id: membership_id, person_id, church_id: store.churchId, status: 'active', joined_on: today() },
-      },
-    ],
-  })
-}
-
-function addDepartment(name: string, type_id: string) {
-  if (!store.churchId || !store.ministryId) return
-  const d = { id: crypto.randomUUID(), name, type_id: type_id || null }
-  commit({
-    departments: [...store.departments, d].sort(byName),
-    outbox: [
-      ...store.outbox,
-      { table: 'departments', row: { ...d, ministry_id: store.ministryId, church_id: store.churchId } },
-    ],
-  })
-}
-
-function addCell(name: string) {
-  if (!store.churchId) return
-  const c = { id: crypto.randomUUID(), name }
-  commit({
-    cells: [...store.cells, c].sort(byName),
-    outbox: [...store.outbox, { table: 'cell_groups', row: { ...c, church_id: store.churchId } }],
-  })
-}
-
-function setDeptMember(department_id: string, church_membership_id: string, on: boolean) {
-  if (!store.churchId) return
-  const same = (l: Row) => l.church_membership_id === church_membership_id && l.department_id === department_id
-  const existing = store.deptMembers.find(same)
-  if (on && existing) return
-  const id = existing?.id ?? crypto.randomUUID()
-  commit({
-    deptMembers: on
-      ? [...store.deptMembers, { id, church_membership_id, department_id }]
-      : store.deptMembers.filter((l) => !same(l)),
-    outbox: [
-      ...store.outbox.filter(
-        (o) =>
-          !(
-            o.table === 'department_memberships' &&
-            o.row.church_membership_id === church_membership_id &&
-            o.row.department_id === department_id
-          ),
-      ),
-      {
-        table: 'department_memberships',
-        onConflict: 'church_membership_id,department_id',
-        row: {
-          id,
-          church_membership_id,
-          church_id: store.churchId,
-          department_id,
-          joined_on: today(),
-          deleted_at: on ? null : new Date().toISOString(),
-        },
-      },
-    ],
-  })
-}
-
-// A member is in at most one cell group: joining a new one leaves the old one.
-function setCellMember(cell_group_id: string, church_membership_id: string, on: boolean) {
-  if (!store.churchId) return
-  const now = new Date().toISOString()
-  const ops: Op[] = []
-  let next = [...store.cellMembers]
-
-  const old = next.find((l) => l.church_membership_id === church_membership_id)
-  if (old && (!on || old.cell_group_id !== cell_group_id)) {
-    ops.push({
-      table: 'cell_memberships',
-      row: {
-        id: old.id,
-        church_membership_id,
-        church_id: store.churchId,
-        cell_group_id: old.cell_group_id,
-        deleted_at: now,
-      },
-    })
-    next = next.filter((l) => l !== old)
-  }
-  if (on && !(old && old.cell_group_id === cell_group_id)) {
-    const id = crypto.randomUUID()
-    ops.push({
-      table: 'cell_memberships',
-      row: {
-        id,
-        church_membership_id,
-        church_id: store.churchId,
-        cell_group_id,
-        joined_on: today(),
-        deleted_at: null,
-      },
-    })
-    next.push({ id, church_membership_id, cell_group_id })
-  }
-  commit({ cellMembers: next, outbox: [...store.outbox, ...ops] })
-}
-
-function addEvent(title: string, date: string, group: string): string | undefined {
-  if (!store.churchId) return
-  const id = crypto.randomUUID()
-  const starts_at = new Date(date + 'T09:00:00').toISOString()
-  const department_id = group.startsWith('d:') ? group.slice(2) : null
-  const cell_group_id = group.startsWith('c:') ? group.slice(2) : null
-  const ev = { id, title, event_type: 'service', starts_at, department_id, cell_group_id }
-  commit({
-    events: [ev, ...store.events].sort((a, b) => b.starts_at.localeCompare(a.starts_at)),
-    outbox: [
-      ...store.outbox,
-      { table: 'events', row: { ...ev, church_id: store.churchId, created_by: store.personId } },
-    ],
-  })
-  return id
-}
-
-function markAttendance(event_id: string, person_id: string, status: string) {
-  if (!store.churchId) return
-  const existing = store.attendance.find((a) => a.event_id === event_id && a.person_id === person_id)
-  const id = existing?.id ?? crypto.randomUUID()
-  commit({
-    attendance: [...store.attendance.filter((a) => a !== existing), { id, event_id, person_id, status }],
-    // replace any older queued change for the same person+event
-    outbox: [
-      ...store.outbox.filter(
-        (o) => !(o.table === 'attendance' && o.row.event_id === event_id && o.row.person_id === person_id),
-      ),
-      {
-        table: 'attendance',
-        onConflict: 'event_id,person_id',
-        row: {
-          id,
-          event_id,
-          church_id: store.churchId,
-          person_id,
-          status,
-          recorded_by: store.personId,
-          recorded_at: new Date().toISOString(),
-        },
-      },
-    ],
-  })
-}
-
-/* ------------------------------------------------------------------ */
-/* Sync: push the outbox in order, then pull fresh server data.        */
-/* ------------------------------------------------------------------ */
-let syncing = false
-
-async function pull(userId: string) {
-  const p = await supabase.from('people').select('id').eq('auth_user_id', userId).maybeSingle()
-  if (p.error) throw new Error(p.error.message)
-
-  const c = await supabase.from('churches').select('id,name,ministry_id').order('name').limit(1).maybeSingle()
-  if (c.error) throw new Error(c.error.message)
-  if (!c.data) throw new Error('No church access yet. Ask an administrator to assign you a role.')
-  const churchId = c.data.id
-
-  const [m, e, a, d, g, dm, cm, dt] = await Promise.all([
-    supabase
-      .from('church_memberships')
-      .select('id,person_id,status,people(full_name,phone)')
-      .eq('church_id', churchId)
-      .is('deleted_at', null)
-      .order('created_at'),
-    supabase
-      .from('events')
-      .select('id,title,event_type,starts_at,department_id,cell_group_id')
-      .eq('church_id', churchId)
-      .is('deleted_at', null)
-      .order('starts_at', { ascending: false })
-      .limit(100),
-    supabase.from('attendance').select('id,event_id,person_id,status').eq('church_id', churchId).limit(1000),
-    supabase.from('departments').select('id,name,type_id').eq('church_id', churchId).is('deleted_at', null).order('name'),
-    supabase.from('cell_groups').select('id,name').eq('church_id', churchId).is('deleted_at', null).order('name'),
-    supabase
-      .from('department_memberships')
-      .select('id,church_membership_id,department_id')
-      .eq('church_id', churchId)
-      .is('deleted_at', null),
-    supabase
-      .from('cell_memberships')
-      .select('id,church_membership_id,cell_group_id')
-      .eq('church_id', churchId)
-      .is('deleted_at', null),
-    supabase.from('department_types').select('id,name').order('name'),
-  ])
-  for (const r of [m, e, a, d, g, dm, cm, dt]) if (r.error) throw new Error(r.error.message)
-
-  commit({
-    personId: p.data?.id,
-    churchId,
-    churchName: c.data.name,
-    ministryId: c.data.ministry_id,
-    members: (m.data as any[]).map((r) => ({
-      membership_id: r.id,
-      person_id: r.person_id,
-      status: r.status,
-      full_name: r.people?.full_name,
-      phone: r.people?.phone,
-    })),
-    events: e.data as Row[],
-    attendance: a.data as Row[],
-    departments: d.data as Row[],
-    cells: g.data as Row[],
-    deptMembers: dm.data as Row[],
-    cellMembers: cm.data as Row[],
-    deptTypes: dt.data as Row[],
-  })
-}
-
-async function sync(userId: string): Promise<string | null> {
-  if (syncing) return null
-  syncing = true
-  try {
-    while (store.outbox.length) {
-      const op = store.outbox[0]
-      const { error } = await supabase.from(op.table).upsert(op.row, { onConflict: op.onConflict })
-      if (error) return `Could not sync ${op.table}: ${error.message}`
-      commit({ outbox: store.outbox.slice(1) })
-    }
-    await pull(userId)
-    commit({ lastSync: new Date().toISOString() })
-    return null
-  } catch (e: any) {
-    return e?.message || 'Network error'
-  } finally {
-    syncing = false
-  }
-}
+import type { Session } from '@supabase/supabase-js'
+import {
+  supabase,
+  store,
+  commit,
+  useStore,
+  empty,
+  today,
+  sync,
+  addMember,
+  addDepartment,
+  addCell,
+  setDeptMember,
+  setCellMember,
+  addEvent,
+  markAttendance,
+} from './store'
+import type { Row, Store } from './store'
+import { Roles, Audit, SyncCenter } from './admin'
 
 /* ------------------------------------------------------------------ */
 /* UI                                                                  */
@@ -655,11 +356,37 @@ function Attendance({ s }: { s: Store }) {
   )
 }
 
+function More({ s, onOpen }: { s: Store; onOpen: (k: 'roles' | 'audit' | 'sync') => void }) {
+  const can = (p: string) => s.perms.includes(p)
+  return (
+    <div className="card">
+      <h2>More</h2>
+      <div className="item between" onClick={() => onOpen('sync')}>
+        <strong>Sync center</strong>
+        <span className="muted">{s.outbox.length} pending &rsaquo;</span>
+      </div>
+      {can('roles.assign') && (
+        <div className="item between" onClick={() => onOpen('roles')}>
+          <strong>Roles and access</strong>
+          <span className="muted">&rsaquo;</span>
+        </div>
+      )}
+      {can('audit.read') && (
+        <div className="item between" onClick={() => onOpen('audit')}>
+          <strong>Audit log</strong>
+          <span className="muted">&rsaquo;</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function App() {
   const s = useStore()
   const [session, setSession] = useState<Session | null>(null)
   const [ready, setReady] = useState(false)
-  const [tab, setTab] = useState<'members' | 'groups' | 'attendance'>('members')
+  const [tab, setTab] = useState<'members' | 'groups' | 'attendance' | 'more'>('members')
+  const [sub, setSub] = useState<null | 'roles' | 'audit' | 'sync'>(null)
   const [msg, setMsg] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [online, setOnline] = useState(navigator.onLine)
@@ -682,7 +409,9 @@ function App() {
       return
     }
     setBusy(true)
-    setMsg(await sync(uid))
+    const err = await sync(uid)
+    setMsg(err)
+    commit({ lastError: err || undefined })
     setBusy(false)
   }, [uid])
 
@@ -755,6 +484,19 @@ function App() {
       {tab === 'members' && <Members s={s} />}
       {tab === 'groups' && <Groups s={s} />}
       {tab === 'attendance' && <Attendance s={s} />}
+      {tab === 'more' &&
+        (sub === null ? (
+          <More s={s} onOpen={setSub} />
+        ) : (
+          <>
+            <button className="small" onClick={() => setSub(null)}>
+              &lsaquo; Back
+            </button>
+            {sub === 'roles' && <Roles s={s} online={online} onChanged={doSync} />}
+            {sub === 'audit' && <Audit s={s} online={online} />}
+            {sub === 'sync' && <SyncCenter s={s} online={online} busy={busy} onSync={doSync} />}
+          </>
+        ))}
 
       <nav>
         <button className={tab === 'members' ? 'active' : ''} onClick={() => setTab('members')}>
@@ -765,6 +507,15 @@ function App() {
         </button>
         <button className={tab === 'attendance' ? 'active' : ''} onClick={() => setTab('attendance')}>
           Attendance
+        </button>
+        <button
+          className={tab === 'more' ? 'active' : ''}
+          onClick={() => {
+            setTab('more')
+            setSub(null)
+          }}
+        >
+          More
         </button>
       </nav>
     </>
