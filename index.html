@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#1e3a8a" />
+    <title>ECMS</title>
+    <style>
+      :root { --bg:#f4f6fb; --card:#fff; --ink:#111827; --muted:#6b7280; --brand:#1e3a8a; --line:#e5e7eb; --ok:#15803d; --warn:#b45309; --bad:#b91c1c; }
+      @media (prefers-color-scheme: dark) {
+        :root { --bg:#0f172a; --card:#1e293b; --ink:#f1f5f9; --muted:#94a3b8; --brand:#60a5fa; --line:#334155; }
+      }
+      * { box-sizing: border-box; }
+      html, body { margin:0; background:var(--bg); color:var(--ink); font-family: system-ui, sans-serif; }
+      body { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+      #root { max-width: 640px; margin: 0 auto; padding: 12px 12px 84px; }
+      h1 { margin: 0; font-size: 1.3rem; }
+      h2 { font-size: 1.05rem; margin: 0 0 8px; }
+      .muted { color: var(--muted); font-size: .85rem; }
+      .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin: 10px 0; }
+      .login { margin-top: 15vh; }
+      .row { display: flex; gap: 8px; align-items: center; }
+      .row > * { flex: 1; }
+      .between { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+      input, select, button { font: inherit; padding: 11px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--ink); width: 100%; margin: 4px 0; }
+      button { cursor: pointer; font-weight: 600; }
+      button.primary { background: var(--brand); color: #fff; border-color: var(--brand); }
+      button.small { width: auto; padding: 8px 12px; margin: 0; }
+      .pill { font-size: .75rem; padding: 3px 8px; border-radius: 99px; border: 1px solid var(--line); white-space: nowrap; }
+      .on { color: var(--ok); } .off { color: var(--warn); }
+      .banner { background: #fef3c7; color: #78350f; border-radius: 10px; padding: 10px; margin: 8px 0; font-size: .9rem; }
+      .item { padding: 10px 0; border-bottom: 1px solid var(--line); }
+      .item:last-child { border-bottom: 0; }
+      .btns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-top: 6px; }
+      .btns button { padding: 8px 2px; font-size: .8rem; margin: 0; }
+      .btns button.active.present { background: var(--ok); color: #fff; border-color: var(--ok); }
+      .btns button.active.late { background: var(--warn); color: #fff; border-color: var(--warn); }
+      .btns button.active.excused { background: #2563eb; color: #fff; border-color: #2563eb; }
+      .btns button.active.absent { background: var(--bad); color: #fff; border-color: var(--bad); }
+      nav { position: fixed; left: 0; right: 0; bottom: 0; display: flex; background: var(--card); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+      nav button { border: 0; border-radius: 0; margin: 0; padding: 16px; background: transparent; }
+      nav button.active { color: var(--brand); border-top: 3px solid var(--brand); }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/App.tsx"></script>
+  </body>
+  </html>
+  
