@@ -1,0 +1,5 @@
+{
+  "appId": "org.ecms.app",
+  "appName": "ECMS",
+  "webDir": "dist"
+}
